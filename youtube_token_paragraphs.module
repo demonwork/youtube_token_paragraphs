@@ -1,0 +1,111 @@
+<?php
+
+use GuzzleHttp\Exception\RequestException;
+use Drupal\Component\Utility\Html;
+use Drupal\Component\Utility\UrlHelper;
+use Drupal\field\Entity\FieldConfig;
+use Drupal\Core\File\FileSystemInterface;
+use Drupal\Core\Language\LanguageInterface;
+use Drupal\Core\Link;
+use Drupal\Core\Url;
+use Drupal\file\Entity\File;
+use Drupal\image\Entity\ImageStyle;
+
+function youtube_token_paragraphs_tokens($type, $tokens, array $data, array $options, \Drupal\Core\Render\BubbleableMetadata $bubbleable_metadata)
+{
+    $replacements = [];
+    global $base_url;
+    global $base_path;
+
+    $url_options = ['absolute' => TRUE];
+
+    if (isset($options['langcode'])) {
+        $url_options['language'] = \Drupal::languageManager()->getLanguage($options['langcode']);
+        $langcode = $options['langcode'];
+    } else {
+        $langcode = LanguageInterface::LANGCODE_DEFAULT;
+    }
+
+    $sanitize = !empty($options['sanitize']);
+
+    if ($type == 'node' && !empty($data['node'])) {
+        $node = $data['node'];
+
+        foreach ($tokens as $name => $original) {
+            if (!strpos($name, '__youtube_')) {
+                // This isn't a youtube token!
+                continue;
+            }
+
+            $token_pieces = explode(':', $name);
+            if (count($token_pieces) > 2) {
+                $field_name_ref = $token_pieces[0];
+                $token_pieces = explode('__', $token_pieces[2]);
+                if (count($token_pieces) != 2) {
+                    continue;
+                }
+                $field_name = $token_pieces[0];
+                $token_name = $token_pieces[1];
+            } else {
+                $token_pieces = explode('__', $name);
+                if (count($token_pieces) != 2) {
+                    continue;
+                }
+
+                $field_name = $token_pieces[0];
+                $token_name = $token_pieces[1];
+            }
+
+            if (!$node->hasField($field_name_ref)) {
+                continue;
+            }
+
+            $field_ref = $node->$field_name_ref;
+            $field_ref_target_type = $field_ref->getFieldDefinition()->getSettings()['target_type'];
+            $realnode = null;
+            if ($field_ref_target_type == 'paragraph') {
+                foreach ($field_ref->referencedEntities() as $entity_ref) {
+                    if ($entity_ref->hasField($field_name)) {
+                        $realnode = $entity_ref;
+                        break;
+                    }
+                }
+            }
+
+            $realnode = $realnode == null ? $node : $realnode;
+            switch ($token_name) {
+                case 'youtube_video_url':
+                    $replacements[$original] = '';
+
+                    $field = $realnode->$field_name;
+                    if ($video_id = $field->video_id) {
+                        $replacements[$original] = 'http://www.youtube.com/watch?v=' . $video_id;
+                    }
+                    break;
+
+                case 'youtube_image_url':
+                    $replacements[$original] = '';
+
+                    $field = $realnode->$field_name;
+                    if ($video_id = $field->video_id) {
+                        $file_uri = youtube_build_thumbnail_uri($video_id);
+                        if (file_exists($file_uri) || youtube_get_remote_image($video_id)) {
+                            $replacements[$original] = file_create_url($file_uri);
+
+                            if ($style_name = \Drupal::config('youtube.settings')->get('youtube_thumb_token_image_style')) {
+                                $image_style = ImageStyle::load($style_name);
+                                $derivative_uri = $image_style->buildUri($file_uri);
+                                if (!file_exists($derivative_uri)) {
+                                    $image_style->createDerivative($file_uri, $derivative_uri);
+                                }
+                                $replacements[$original] = file_create_url($derivative_uri);
+                            }
+                        }
+                    }
+                    break;
+            }
+        }
+    }
+
+    return $replacements;
+}
